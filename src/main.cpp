@@ -9,6 +9,13 @@
 using namespace Eigen;
 using namespace std;
 
+struct Nodes{
+        int start;
+        int end;
+        VectorXd mean;
+        VectorXd farthest_instance;
+    };
+
 void readFile(MatrixXd &matrix, std::string const &filename, int vectorSize, int numVectors)
 {
 
@@ -43,32 +50,28 @@ void readFile(MatrixXd &matrix, std::string const &filename, int vectorSize, int
     }
 }
 
-VectorXi columnVariance(const MatrixXd &mat)
-{
+VectorXi columnVariance(const MatrixXd &mat) {
     int numCols = mat.cols();
 
     VectorXd variances(numCols);
     VectorXd means = mat.colwise().mean();
 
-    for (int i = 0; i < numCols; i++)
-    {
-        VectorXd centered = mat.col(i) - VectorXd::Constant(mat.rows(), means(i));
-        centered = centered.array().square();
+    for (int i = 0; i < numCols; i++) {
+        ArrayXd centered = mat.col(i).array() - means(i);
+        centered = centered.square();
         variances(i) = centered.mean();
     }
 
-    std::sort(variances.data(), variances.data() + variances.size(), [](const double &a, const double &b)
-              { return a < b; });
-
+    // Sort the indices based on variances
     VectorXi idx(variances.size());
+    iota(idx.data(), idx.data() + idx.size(), 0);
+    sort(idx.data(), idx.data() + idx.size(), [&variances](int i1, int i2) {
+        return variances(i1) < variances(i2);
+    });
 
-    iota(idx.begin(), idx.end(), 0);
-
-    sort(idx.begin(), idx.end(), [&variances](size_t i1, size_t i2)
-         { return variances[i1] < variances[i2]; });
     return idx;
 }
-
+/*
 void permuteMat(MatrixXd &mat, const VectorXi &idx, bool cols = true, bool inverse = false)
 {
 
@@ -92,32 +95,32 @@ void permuteMat(MatrixXd &mat, const VectorXi &idx, bool cols = true, bool inver
     }
     mat = perm * mat;
 }
-
-bool customComparison(const Eigen::VectorXd &a, const Eigen::VectorXd &b, int gap = 1)
+*/
+bool customComparison(const Eigen::VectorXd &a, const Eigen::VectorXd &b,const Eigen::VectorXi &col_idx, int gap = 1)
 {
     for (int i = 0; i < a.size(); i++)
     {
-        if (floor(a(i)/gap) != floor(b(i)/gap))
-            return false;
+        if (floor(a(col_idx(i))/gap) != floor(b(col_idx(i))/gap)){
+            return (floor(a(col_idx(i))/gap) < floor(b(col_idx(i))/gap));
+            }
     }
     return true;
 }
 
-void sortMatRows(MatrixXd &mat)
+VectorXi sortMatRows(MatrixXd &mat, const VectorXi &col_idx)
 {
 
     std::vector<int> indices(mat.rows());
     iota(indices.begin(), indices.end(), 0);
 
     std::sort(indices.begin(), indices.end(), [&](int a, int b)
-                     { return customComparison(mat.row(a), mat.row(b)); });
+              { return customComparison(mat.row(a), mat.row(b), col_idx); });
 
     Eigen::VectorXi ind = Map<Eigen::VectorXi, Eigen::Unaligned>(indices.data(), indices.size());
-
-    permuteMat(mat, ind, false);
+    return ind;
 }
 
-double rowDistance(const MatrixXd &mat, vector<double> &distances)
+void rowDistance(const MatrixXd &mat, vector<double> &distances)
 {
     for (int i = 0; i < mat.rows() - 1; i++)
     {
@@ -126,12 +129,52 @@ double rowDistance(const MatrixXd &mat, vector<double> &distances)
     }
 }
 
+void segments(const vector<double> &distances, int k, int numVectors, vector<int> &clusters){
+    vector<int> idx(distances.size());
+    iota(idx.begin(), idx.end(), 0);
+    sort(idx.begin(), idx.end(), [&distances](size_t i1, size_t i2)
+         { return distances[i1] < distances[i2]; });
+
+    clusters.push_back(-1);
+    for (int i = 0; i < k; i++)
+    {
+        clusters.push_back(idx[idx.size()-(k-i)]);
+    }
+    clusters.push_back(numVectors-1);
+}
+
+void leaf_nodes(const MatrixXd &mat, vector<int> &ind, vector<Nodes> &vgs)
+{
+
+    for (int i = 0; i < ind.size() - 1; i++)
+    {
+
+        VectorXd meanVector = mat.block(ind[i], 0, ind[i + 1] - ind[i] + 1, mat.cols()).colwise().mean();
+
+        // Calculate the Euclidean norms of each row
+        VectorXd norms = (mat.block(ind[i], 0, ind[i + 1] - ind[i] + 1, mat.cols()).rowwise() - meanVector.transpose()).rowwise().norm();
+
+        // Find the index of the row with the maximum Euclidean norm
+        int ans = norms[0];
+        int arg = 0;
+        int normSize = norms.size();
+        for (int j = 0; j < normSize; j++)
+        {
+            if(norms[j] > ans){
+                ans = norms[j];
+                arg = j;
+            }
+        }
+        vgs.push_back({ind[i] + 1, ind[i+1] + 1, meanVector, mat.row(ind[i]+arg)});
+    }
+}
+
 int main(int argc, char *argv[])
 {
 
     if (argc < 5)
     {
-        std::cerr << "Usage: " << argv[0] << " <filename> <dimension> <size>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <filename> <dimension> <size> <K>" << std::endl;
         return 1;
     }
     string filename = argv[1];      // data filen name
@@ -140,52 +183,26 @@ int main(int argc, char *argv[])
     int K = stoi(argv[4]);          // number of clusters
 
     MatrixXd matrix(numVectors, vectorSize);
+    matrix << 2.3, 5.7, 8.1, 3.2, 1.5,
+            9.4, 4.6, 6.8, 0.9, 7.2,
+            1.8, 3.5, 7.9, 2.1, 9.7,
+            4.3, 0.6, 8.7, 5.1, 6.4,
+            7.6, 2.9, 4.5, 9.2, 1.0;
 
-    readFile(matrix, filename, vectorSize, numVectors);
+    // readFile(matrix, filename, vectorSize, numVectors);
 
     // order the matrix based on the variance
-    VectorXi indexes = columnVariance(matrix);
+    VectorXi col_index = columnVariance(matrix);
 
-    // order the mat based on rows
-    sortMatRows(matrix);
+    // sort matrows 
+    VectorXi row_index = sortMatRows(matrix, col_index);
 
-    // calcuate the row distances.
-    vector<double> distances(matrix.rows() - 1);
-    rowDistance(matrix, distances);
-
-    // Calculate the clusters delimeters
-    vector<double> clusters(K);
-    vector<int> idx(distances.size());
-    iota(idx.begin(), idx.end(), 0);
-    sort(idx.begin(), idx.end(), [&distances](size_t i1, size_t i2)
-         { return distances[i1] < distances[i2]; });
-    std::copy(idx.end() - K, idx.end(), clusters.begin());
-
-
-
-    
-    vector<pair<int, int>> Nodes(K);
-    Nodes.push_back({0, idx[0]});
-
-    // Adding the rest of the Nodes
-    for (int i = 0; i < K - 1; i++) {
-        Nodes.push_back({idx[i], idx[i + 1]});
-    }
-
-    // sample data testing
-    Eigen::MatrixXd mat(3, 3); 
-    mat << 1, 2, 3,
-        4, 5, 6,
-        2, 8, 9;
-
-    VectorXi indexes = columnVariance(mat);
-
-    permuteMat(mat, indexes);
-    cout << mat << endl;
-
-    sortMatRows(mat);
-    cout << " \n sorted rows \n"
-         << mat << endl;
+    // test
+    // std::vector<int> indices(matrix.rows());
+    // iota(indices.begin(), indices.end(), 0);
+    // Eigen::VectorXi ind = Map<Eigen::VectorXi, Eigen::Unaligned>(indices.data(), indices.size());
+    // VectorXi row_index = sortMatRows(matrix, ind);
+    cout << row_index ;
 
     return 0;
 }
