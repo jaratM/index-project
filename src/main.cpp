@@ -140,18 +140,20 @@ vector<int> rowDistance(const MatrixXd &mat, vector<double> &distances)
     return idx;
 }
 
-void leaf_nodes(const MatrixXd &mat, vector<int> &ind, vector<Nodes> &vgs, int K)
+void leaf_nodes(const MatrixXd &mat, vector<int> &idx, vector<Nodes> &vgs, int K)
 {
-    ind.insert(ind.begin(), 0);
-    ind.push_back(mat.rows());
-    for (int i = 0; i < K + 1; i++)
+    std::vector<int> ind(K);
+    std::copy(idx.begin(), idx.begin() + K, ind.begin());
+    
+    ind.insert(ind.begin(), -1);
+    ind.push_back(mat.rows()-1);
+    for (int i = 1; i < ind.size() ; i++)
     {
-
-        VectorXd meanVector = mat.block(ind[i], 0, ind[i + 1] - ind[i] + 1, mat.cols()).colwise().mean();
+        int rows = ind[i] - ind[i-1] ;
+        VectorXd meanVector = mat.block(ind[i-1] + 1, 0, rows, mat.cols()).colwise().mean();
 
         // Calculate the Euclidean norms of each row
-        VectorXd norms = (mat.block(ind[i], 0, ind[i + 1] - ind[i] + 1, mat.cols()).rowwise() - meanVector.transpose()).rowwise().norm();
-
+        VectorXd norms = (mat.block(ind[i-1] + 1 , 0, rows, mat.cols()).rowwise() - meanVector.transpose()).colwise().norm();
         // Find the index of the row with the maximum Euclidean norm
         int ans = norms[0];
         int arg = 0;
@@ -164,7 +166,8 @@ void leaf_nodes(const MatrixXd &mat, vector<int> &ind, vector<Nodes> &vgs, int K
                 arg = j;
             }
         }
-        vgs.push_back({ind[i] + 1, ind[i + 1] + 1, meanVector, mat.row(ind[i] + arg)});
+        cout << ind[i] << " " << rows << endl;
+        vgs.push_back({ind[i-1] +1 , ind[i] + 1, meanVector, mat.row(ind[i-1]+ 1 + arg)});
     }
 }
 
@@ -207,9 +210,9 @@ int main(int argc, char *argv[])
     vector<int> idx;
     idx = rowDistance(matrix, distances);
     vector<Nodes> vgs;
-
     leaf_nodes(matrix, idx, vgs, K);
 
+    
     for (const Nodes &node : vgs)
     {
         std::cout << "Start: " << node.start << "\n";
