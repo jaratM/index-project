@@ -9,13 +9,55 @@
 using namespace Eigen;
 using namespace std;
 
-struct Nodes
+struct Node
 {
     int start;
     int end;
     VectorXd mean;
     VectorXd farthest_instance;
 };
+
+struct Vgs_index{
+    int node_index;
+    Node node;
+    Vgs_index *left;
+    Vgs_index *right;
+
+    // Constructor for leaf nodes
+    Vgs_index(int index) : node_index(index), left(nullptr), right(nullptr) {}
+
+    // Constructor for non-leaf nodes
+    Vgs_index(Node node) : node(node),  left(nullptr), right(nullptr) {}
+};
+
+Node merge_nodes(Node n1, Node n2){
+    int start = min(n1.start, n2.start);
+    int end = max(n1.end, n2.end);
+    VectorXd mean = (((n1.end-n1.start+1)*n1.mean) + ((n2.end-n2.start+1)*n2.mean))/ ((n2.end-n2.start+1) + (n1.end-n1.start+1));
+    VectorXd farthest_element = max(n1.mean+n1.farthest_instance, n2.mean + n2.farthest_instance);
+    return {start, end, mean, farthest_element};
+}
+
+Vgs_index* build_index(vector<Node> const &vgs, int start, int end) {
+    if (start == end) {
+        // Create a leaf node
+        return new Vgs_index(start);
+    }
+
+    // Create a non-leaf node with the start and end indices
+    Node merged_nodes = merge_nodes(vgs[start], vgs[end]);
+
+    Vgs_index* root = new Vgs_index(merged_nodes);
+
+    // Find the middle index
+    int mid = (start + end) / 2;
+
+    // Recursively build the left and right subtrees
+    root->left = build_index(vgs, start, mid);
+    root->right = build_index(vgs, mid + 1, end);
+    
+    return root;
+}
 
 void readFile(MatrixXd &matrix, std::string const &filename, int vectorSize, int numVectors)
 {
@@ -140,7 +182,7 @@ vector<int> rowDistance(const MatrixXd &mat, vector<double> &distances)
     return idx;
 }
 
-void leaf_nodes(const MatrixXd &mat, vector<int> &idx, vector<Nodes> &vgs, int K)
+void leaf_nodes(const MatrixXd &mat, vector<int> &idx, vector<Node> &vgs, int K)
 {
     std::vector<int> ind(K);
     std::copy(idx.begin(), idx.begin() + K, ind.begin());
@@ -209,11 +251,12 @@ int main(int argc, char *argv[])
     vector<double> distances(numVectors - 1);
     vector<int> idx;
     idx = rowDistance(matrix, distances);
-    vector<Nodes> vgs;
+    vector<Node> vgs;
     leaf_nodes(matrix, idx, vgs, K);
 
+    Vgs_index *index =  build_index(vgs, 0, numVectors);
     
-    for (const Nodes &node : vgs)
+    for (const Node &node : vgs)
     {
         std::cout << "Start: " << node.start << "\n";
         std::cout << "End: " << node.end << "\n";
@@ -224,3 +267,4 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+
