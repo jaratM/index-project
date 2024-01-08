@@ -17,47 +17,13 @@ struct Node
     VectorXd farthest_instance;
 };
 
-struct Vgs_index{
-    int node_index;
+struct Vgs_index
+{
     Node node;
     Vgs_index *left;
     Vgs_index *right;
-
-    // Constructor for leaf nodes
-    Vgs_index(int index) : node_index(index), left(nullptr), right(nullptr) {}
-
-    // Constructor for non-leaf nodes
-    Vgs_index(Node node) : node(node),  left(nullptr), right(nullptr) {}
+    Vgs_index(Node node) : node(node), left(nullptr), right(nullptr) {}
 };
-
-Node merge_nodes(Node n1, Node n2){
-    int start = min(n1.start, n2.start);
-    int end = max(n1.end, n2.end);
-    VectorXd mean = (((n1.end-n1.start+1)*n1.mean) + ((n2.end-n2.start+1)*n2.mean))/ ((n2.end-n2.start+1) + (n1.end-n1.start+1));
-    VectorXd farthest_element = max(n1.mean+n1.farthest_instance, n2.mean + n2.farthest_instance);
-    return {start, end, mean, farthest_element};
-}
-
-Vgs_index* build_index(vector<Node> const &vgs, int start, int end) {
-    if (start == end) {
-        // Create a leaf node
-        return new Vgs_index(start);
-    }
-
-    // Create a non-leaf node with the start and end indices
-    Node merged_nodes = merge_nodes(vgs[start], vgs[end]);
-
-    Vgs_index* root = new Vgs_index(merged_nodes);
-
-    // Find the middle index
-    int mid = (start + end) / 2;
-
-    // Recursively build the left and right subtrees
-    root->left = build_index(vgs, start, mid);
-    root->right = build_index(vgs, mid + 1, end);
-    
-    return root;
-}
 
 void readFile(MatrixXd &matrix, std::string const &filename, int vectorSize, int numVectors)
 {
@@ -93,6 +59,37 @@ void readFile(MatrixXd &matrix, std::string const &filename, int vectorSize, int
     }
 }
 
+Node merge_nodes(Node n1, Node n2)
+{
+    int start = min(n1.start, n2.start);
+    int end = max(n1.end, n2.end);
+    VectorXd mean = (((n1.end - n1.start + 1) * n1.mean) + ((n2.end - n2.start + 1) * n2.mean)) / ((n2.end - n2.start + 1) + (n1.end - n1.start + 1));
+    VectorXd farthest_element = (n1.mean + n1.farthest_instance).cwiseMax(n2.mean + n2.farthest_instance);
+    return {start, end, mean, farthest_element};
+}
+
+Vgs_index *build_index(vector<Node> const &vgs, int start, int end)
+{
+    if (start == end)
+    {
+        // Create a leaf node
+        return new Vgs_index(vgs[start]);
+    }
+
+    // Create a non-leaf node with the start and end indices
+    Node merged_nodes = merge_nodes(vgs[start], vgs[end]);
+
+    Vgs_index *root = new Vgs_index(merged_nodes);
+
+    int mid = (start + end) / 2;
+
+    // Recursively build the left and right subtrees
+    root->left = build_index(vgs, start, mid);
+    root->right = build_index(vgs, mid + 1, end);
+
+    return root;
+}
+
 VectorXi columnVariance(const MatrixXd &mat)
 {
     int numCols = mat.cols();
@@ -112,41 +109,38 @@ VectorXi columnVariance(const MatrixXd &mat)
     iota(idx.data(), idx.data() + idx.size(), 0);
     sort(idx.data(), idx.data() + idx.size(), [&variances](int i1, int i2)
          { return variances(i1) > variances(i2); });
-    // cout << variances.transpose() << endl;
     return idx;
 }
 
-void permuteMat(MatrixXd &mat, const VectorXi &idx, bool cols = true, bool inverse = false)
-{
-    Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic> perm;
-    perm.indices() = idx;
-    // Permutate cols
-    if (cols)
-    {
-        if (inverse)
-        {
-            mat = mat * perm.inverse();
-            return;
-        }
-        mat = mat * perm;
-        return;
-    }
-    if (inverse)
-    {
-        mat = perm * mat;
-        return;
-    }
-    mat = perm.inverse() * mat;
-}
+// void permuteMat(MatrixXd &mat, const VectorXi &idx, bool cols = true, bool inverse = false)
+// {
+//     Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic> perm;
+//     perm.indices() = idx;
+//     // Permutate cols
+//     if (cols)
+//     {
+//         if (inverse)
+//         {
+//             mat = mat * perm.inverse();
+//             return;
+//         }
+//         mat = mat * perm;
+//         return;
+//     }
+//     if (inverse)
+//     {
+//         mat = perm * mat;
+//         return;
+//     }
+//     mat = perm.inverse() * mat;
+// }
 
-bool customComparison(const Eigen::VectorXd &a, const Eigen::VectorXd &b, const Eigen::VectorXi &col_idx, double gap = double(2.275))
+bool customComparison(const Eigen::VectorXd &a, const Eigen::VectorXd &b, const Eigen::VectorXi &col_idx, double gap)
 {
     for (int i = 0; i < a.size(); i++)
     {
-        // cout << floor(a(col_idx(i)) / gap) << " " << floor(b(col_idx(i)) / gap) << " ";
         if (floor(a(col_idx(i)) / gap) != floor(b(col_idx(i)) / gap))
         {
-            // cout << a(col_idx(i)) / gap << " " << b(col_idx(i)) / gap << endl;
             return (floor(a(col_idx(i)) / gap) < floor(b(col_idx(i)) / gap));
         }
     }
@@ -155,22 +149,29 @@ bool customComparison(const Eigen::VectorXd &a, const Eigen::VectorXd &b, const 
 
 VectorXi sortMatRows(MatrixXd &mat, const VectorXi &col_idx)
 {
-
+    double min_val = mat.minCoeff();
+    double max_val = mat.maxCoeff();
+    double bin = (min_val  + max_val)/4;  // 4 represent the number of bins to create for discretizing the matrix values.
     std::vector<int> indices(mat.rows());
     iota(indices.begin(), indices.end(), 0);
 
     std::sort(indices.begin(), indices.end(), [&](int a, int b)
-              { return customComparison(mat.row(a), mat.row(b), col_idx); });
+              { return customComparison(mat.row(a), mat.row(b), col_idx, bin); });
 
     Eigen::VectorXi ind = Map<Eigen::VectorXi, Eigen::Unaligned>(indices.data(), indices.size());
     return ind;
 }
 
-vector<int> rowDistance(const MatrixXd &mat, vector<double> &distances)
+vector<int> rowDistance(const MatrixXd &mat, VectorXi col_index, VectorXi row_index, vector<double> &distances)
 {
     for (int i = 0; i < mat.rows() - 1; i++)
     {
-        Eigen::VectorXd diff = mat.row(i) - mat.row(i + 1);
+        Eigen::VectorXd diff(mat.cols());
+
+        for (int j = 0; j < mat.cols(); j++)
+        {
+            diff(j) = mat(row_index[i], col_index[j]) - mat(row_index[i + 1], col_index[j]);
+        }
         distances[i] = diff.norm();
     }
 
@@ -178,25 +179,44 @@ vector<int> rowDistance(const MatrixXd &mat, vector<double> &distances)
     iota(idx.data(), idx.data() + idx.size(), 0);
     sort(idx.data(), idx.data() + idx.size(), [&distances](int i1, int i2)
          { return distances[i1] > distances[i2]; });
-    // cout << variances.transpose() << endl;
     return idx;
 }
 
-void leaf_nodes(const MatrixXd &mat, vector<int> &idx, vector<Node> &vgs, int K)
+void leaf_nodes(const MatrixXd &mat, vector<int> &idx, VectorXi col_index, VectorXi row_index, vector<Node> &vgs, int K)
 {
     std::vector<int> ind(K);
     std::copy(idx.begin(), idx.begin() + K, ind.begin());
-    
-    ind.insert(ind.begin(), -1);
-    ind.push_back(mat.rows()-1);
-    for (int i = 1; i < ind.size() ; i++)
-    {
-        int rows = ind[i] - ind[i-1] ;
-        VectorXd meanVector = mat.block(ind[i-1] + 1, 0, rows, mat.cols()).colwise().mean();
+    std::sort(ind.begin(), ind.end());
 
-        // Calculate the Euclidean norms of each row
-        VectorXd norms = (mat.block(ind[i-1] + 1 , 0, rows, mat.cols()).rowwise() - meanVector.transpose()).colwise().norm();
-        // Find the index of the row with the maximum Euclidean norm
+    ind.insert(ind.begin(), -1);
+    ind.push_back(mat.rows() - 1);
+
+    for (int i = 1; i < ind.size(); i++)
+    {
+        VectorXd meanVector(mat.cols());
+        for (int col = 0; col < mat.cols(); col++)
+        {
+            meanVector(col) = 0;
+            for (int j = ind[i - 1] + 1; j < ind[i] + 1; j++)
+            {
+                meanVector(col) = meanVector(col) + mat(row_index(j), col_index(col));
+            }
+            meanVector(col) = double(meanVector(col) / (ind[i] - ind[i - 1]));
+        }
+
+        int subrows_len = (ind[i] - ind[i - 1]);
+        VectorXd norms(subrows_len);
+
+        for (int j = 0; j < subrows_len; j++)
+        {
+            VectorXd tmp(mat.cols());
+            for (int k = 0; k < mat.cols(); k++)
+            {
+                tmp(k) = mat(row_index(j + ind[i - 1] + 1), col_index(k)) - meanVector(k);
+            }
+            norms(j) = tmp.norm();
+        }
+
         int ans = norms[0];
         int arg = 0;
         int normSize = norms.size();
@@ -208,8 +228,12 @@ void leaf_nodes(const MatrixXd &mat, vector<int> &idx, vector<Node> &vgs, int K)
                 arg = j;
             }
         }
-        cout << ind[i] << " " << rows << endl;
-        vgs.push_back({ind[i-1] +1 , ind[i] + 1, meanVector, mat.row(ind[i-1]+ 1 + arg)});
+        VectorXd farthest_element(mat.cols());
+        for (int j = 0; j < mat.cols(); j++)
+        {
+            farthest_element(j) = mat(row_index(ind[i - 1] + 1 + arg), col_index(j));
+        }
+        vgs.push_back({ind[i - 1] + 1, ind[i] + 1, meanVector, farthest_element});
     }
 }
 
@@ -237,25 +261,19 @@ int main(int argc, char *argv[])
 
     // order the matrix based on the variance
     VectorXi col_index = columnVariance(matrix);
-    // cout << col_index.transpose() << endl;
 
     // sort matrows
     VectorXi row_index = sortMatRows(matrix, col_index);
-    // cout << row_index.transpose() << endl;
-
-    permuteMat(matrix, col_index);
-    // cout << matrix << endl;
-    permuteMat(matrix, row_index, false);
-    // cout << matrix;
 
     vector<double> distances(numVectors - 1);
     vector<int> idx;
-    idx = rowDistance(matrix, distances);
+    idx = rowDistance(matrix, col_index, row_index, distances);
     vector<Node> vgs;
-    leaf_nodes(matrix, idx, vgs, K);
 
-    Vgs_index *index =  build_index(vgs, 0, numVectors);
-    
+    leaf_nodes(matrix, idx, col_index, row_index, vgs, K);
+
+    Vgs_index *index = build_index(vgs, 0, vgs.size() - 1);
+
     for (const Node &node : vgs)
     {
         std::cout << "Start: " << node.start << "\n";
@@ -267,4 +285,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-
