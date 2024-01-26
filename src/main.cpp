@@ -8,6 +8,8 @@
 
 using namespace Eigen;
 using namespace std;
+typedef unsigned long long file_position_type;
+typedef float ts_type;
 
 struct Node
 {
@@ -19,53 +21,129 @@ struct Node
 
 struct Vgs_index
 {
+    int start;
+    int end;
     Node node;
     Vgs_index *left;
     Vgs_index *right;
-    Vgs_index(Node node) : node(node), left(nullptr), right(nullptr) {}
+    Vgs_index(Node node, int start) : node(node), start{start}, end{start} {}
+    Vgs_index(Node node, int start, int end) : node(node), start{start}, end{end} {}
 };
 
-void readFile(MatrixXd &matrix, std::string const &filename, int vectorSize, int numVectors)
+void read_file(MatrixXd &matrix, char *filename, int vectorSize, int numVectors)
 {
+    auto *ts = static_cast<ts_type *>(malloc(sizeof(ts_type) * vectorSize));
 
-    ifstream file(filename, ios::binary);
-    if (!file.is_open())
+    FILE *ifile;
+    ifile = fopen(filename, "rb");
+    if (ifile == nullptr)
     {
-        cerr << "Error: Unable to open file." << endl;
-        exit(1);
+        fprintf(stderr, "Error in index.c: File %s not found!\n", filename);
+        exit(-1);
     }
 
-    vector<VectorXd> vectors;
+    fseek(ifile, 0L, SEEK_END);
+    auto sz = (file_position_type)ftell(ifile);
+    file_position_type total_records = sz / vectorSize * sizeof(ts_type);
+    fseek(ifile, 0L, SEEK_SET);
 
-    string line;
-    for (int i = 0; i < numVectors; i++)
+    if (total_records < numVectors)
     {
-        VectorXd vector(vectorSize);
-        file.read(reinterpret_cast<char *>(vector.data()), vectorSize * sizeof(float));
+        fprintf(stderr, "File %s has only %llu records!\n", filename, total_records);
+        exit(-1);
+    }
 
-        // Check for any read errors
-        if (file.fail())
+    file_position_type ts_loaded = 0;
+    while (ts_loaded < numVectors)
+    {
+
+        fread(ts, sizeof(ts_type), vectorSize, ifile);
+
+        for (int i = 0; i < vectorSize; ++i)
         {
-            cerr << "Error: Failed to read data from the file." << endl;
-            exit(1);
+            matrix(ts_loaded, i) = ts[i];
         }
-
-        vectors.push_back(vector);
+        ts_loaded++;
     }
-
-    for (int i = 0; i < numVectors; i++)
-    {
-        matrix.row(i) = vectors[i];
-    }
+    cout << endl;
 }
 
-Node merge_nodes(Node n1, Node n2)
+double circle_distance(Node node, ts_type *query)
 {
-    int start = min(n1.start, n2.start);
-    int end = max(n1.end, n2.end);
-    VectorXd mean = (((n1.end - n1.start + 1) * n1.mean) + ((n2.end - n2.start + 1) * n2.mean)) / ((n2.end - n2.start + 1) + (n1.end - n1.start + 1));
-    VectorXd farthest_element = (n1.mean + n1.farthest_instance).cwiseMax(n2.mean + n2.farthest_instance);
-    return {start, end, mean, farthest_element};
+    int dim = node.mean.cols();
+    Eigen::VectorXd diff(dim);
+    for (int i = 0; i < dim; i++)
+    {
+        diff(i) = node.mean(i) - query[i];
+    }
+    return diff.norm();
+}
+
+Vgs_index *query_index(Vgs_index *index, ts_type *query)
+{
+    if (index == nullptr)
+        return nullptr;
+    if (index->start != index->end)
+    {
+        if (circle_distance(index->left->node, query) < circle_distance(index->right->node, query))
+            return query_index(index->left, query);
+        else
+            return query_index(index->right, query);
+    }
+    else
+        return index;
+}
+
+void query_file(Vgs_index *index, char *query_filename, int timeseries_size, int num_queries)
+{
+
+    FILE *query_file = fopen(query_filename, "rb");
+    if (query_file == NULL)
+    {
+        fprintf(stderr, "Queries file %s not found!\n", query_filename);
+        exit(-1);
+    }
+
+    fseek(query_file, 0L, SEEK_END);
+    file_position_type sz = (file_position_type)ftell(query_file);
+    fseek(query_file, 0L, SEEK_SET);
+    file_position_type total_records = sz / timeseries_size * sizeof(ts_type);
+
+    fseek(query_file, 0L, SEEK_SET);
+    unsigned int offset = 0;
+
+    if (total_records < num_queries)
+    {
+        fprintf(stderr, "File %s has only %llu records!\n", query_filename, total_records);
+        exit(-1);
+    }
+
+    unsigned int q_loaded = 0;
+    unsigned int ts_length = timeseries_size;
+
+    ts_type *query_ts = static_cast<ts_type *>(malloc(sizeof(ts_type) * ts_length));
+
+    while (q_loaded < num_queries)
+    {
+        q_loaded++;
+        fread(query_ts, sizeof(ts_type), ts_length, query_file);
+
+    }
+
+    free(query_ts);
+    fclose(query_file);
+}
+
+Vgs_index *merge_nodes(vector<Node> const &vgs, int start, int end)
+{
+    int start1 = min(vgs[start].start, vgs[end].start);
+    int end1 = max(vgs[start].end, vgs[end].end);
+    int size1 = (vgs[start].end - vgs[start].start + 1);
+    int size2 = (vgs[end].end - vgs[end].start + 1);
+    VectorXd mean = ((size1 * vgs[start].mean) + (size2 * vgs[end].mean)) / (size2 + size1);
+    VectorXd farthest_element = (vgs[start].mean + vgs[start].farthest_instance).cwiseMax(vgs[end].mean + vgs[end].farthest_instance);
+    Node node = {start1, end1, mean, farthest_element};
+    return new Vgs_index(node, start, end);
 }
 
 Vgs_index *build_index(vector<Node> const &vgs, int start, int end)
@@ -73,13 +151,11 @@ Vgs_index *build_index(vector<Node> const &vgs, int start, int end)
     if (start == end)
     {
         // Create a leaf node
-        return new Vgs_index(vgs[start]);
+        return new Vgs_index(vgs[start], start);
     }
 
     // Create a non-leaf node with the start and end indices
-    Node merged_nodes = merge_nodes(vgs[start], vgs[end]);
-
-    Vgs_index *root = new Vgs_index(merged_nodes);
+    Vgs_index *root = merge_nodes(vgs, start, end);
 
     int mid = (start + end) / 2;
 
@@ -90,7 +166,8 @@ Vgs_index *build_index(vector<Node> const &vgs, int start, int end)
     return root;
 }
 
-VectorXi columnVariance(const MatrixXd &mat)
+
+VectorXi column_variance(const MatrixXd &mat)
 {
     int numCols = mat.cols();
 
@@ -135,34 +212,34 @@ VectorXi columnVariance(const MatrixXd &mat)
 //     mat = perm.inverse() * mat;
 // }
 
-bool customComparison(const Eigen::VectorXd &a, const Eigen::VectorXd &b, const Eigen::VectorXi &col_idx, double gap)
+bool compare_vecs(const Eigen::VectorXd &a, const Eigen::VectorXd &b, const Eigen::VectorXi &col_idx, double gap, double min_val)
 {
     for (int i = 0; i < a.size(); i++)
     {
-        if (floor(a(col_idx(i)) / gap) != floor(b(col_idx(i)) / gap))
+        if ((floor(a(col_idx(i)) - min_val) / gap) != (floor(b(col_idx(i)) - min_val) / gap))
         {
-            return (floor(a(col_idx(i)) / gap) < floor(b(col_idx(i)) / gap));
+            return ((floor(a(col_idx(i)) - min_val) / gap) < (floor(b(col_idx(i)) - min_val) / gap));
         }
     }
     return true;
 }
 
-VectorXi sortMatRows(MatrixXd &mat, const VectorXi &col_idx)
+VectorXi sort_mat_rows(MatrixXd &mat, const VectorXi &col_idx, int bins)
 {
     double min_val = mat.minCoeff();
     double max_val = mat.maxCoeff();
-    double bin = (min_val  + max_val)/4;  // 4 represent the number of bins to create for discretizing the matrix values.
+    double gap = (min_val + max_val) / bins; // 4 represent the number of bins to create for discretizing the matrix values.
     std::vector<int> indices(mat.rows());
     iota(indices.begin(), indices.end(), 0);
 
     std::sort(indices.begin(), indices.end(), [&](int a, int b)
-              { return customComparison(mat.row(a), mat.row(b), col_idx, bin); });
+              { return compare_vecs(mat.row(a), mat.row(b), col_idx, gap, min_val); });
 
     Eigen::VectorXi ind = Map<Eigen::VectorXi, Eigen::Unaligned>(indices.data(), indices.size());
     return ind;
 }
 
-vector<int> rowDistance(const MatrixXd &mat, VectorXi col_index, VectorXi row_index, vector<double> &distances)
+vector<int> row_distance(const MatrixXd &mat, VectorXi col_index, VectorXi row_index, vector<double> &distances)
 {
     for (int i = 0; i < mat.rows() - 1; i++)
     {
@@ -245,43 +322,42 @@ int main(int argc, char *argv[])
         std::cerr << "Usage: " << argv[0] << " <filename> <dimension> <size> <K>" << std::endl;
         return 1;
     }
-    string filename = argv[1];      // data filen name
-    int vectorSize = stoi(argv[2]); // the vector dimension
-    int numVectors = stoi(argv[3]); // number of vectors to load
-    int K = stoi(argv[4]);          // number of clusters
+    // static char *filename = "nodataset";
+    static char *filename = argv[1]; // data filen name
+    int vectorSize = stoi(argv[2]);  // the vector dimension
+    int numVectors = stoi(argv[3]);  // number of vectors to load
+    int K = stoi(argv[4]);           // number of clusters
 
     MatrixXd matrix(numVectors, vectorSize);
-    matrix << 2.3, 5.7, 8.1, 3.2, 1.5,
-        9.4, 4.6, 6.8, 0.9, 7.2,
-        1.8, 3.5, 7.9, 2.1, 9.7,
-        4.3, 0.6, 8.7, 5.1, 6.4,
-        7.6, 2.9, 4.5, 9.2, 1.0;
-
-    // readFile(matrix, filename, vectorSize, numVectors);
-
+    // matrix << 2.3, 5.7, 8.1, 3.2, 1.5,
+    //     9.4, 4.6, 6.8, 0.9, 7.2,
+    //     1.8, 3.5, 7.9, 2.1, 9.7,
+    //     4.3, 0.6, 8.7, 5.1, 6.4,
+    //     7.6, 2.9, 4.5, 9.2, 1.0;
+    read_file(matrix, filename, vectorSize, numVectors);
+    // cout << matrix << endl;
     // order the matrix based on the variance
-    VectorXi col_index = columnVariance(matrix);
+    VectorXi col_index = column_variance(matrix);
 
+    int bins = 4;
     // sort matrows
-    VectorXi row_index = sortMatRows(matrix, col_index);
+    VectorXi row_index = sort_mat_rows(matrix, col_index, bins);
 
     vector<double> distances(numVectors - 1);
     vector<int> idx;
-    idx = rowDistance(matrix, col_index, row_index, distances);
+    idx = row_distance(matrix, col_index, row_index, distances);
     vector<Node> vgs;
-
     leaf_nodes(matrix, idx, col_index, row_index, vgs, K);
 
     Vgs_index *index = build_index(vgs, 0, vgs.size() - 1);
 
-    for (const Node &node : vgs)
-    {
-        std::cout << "Start: " << node.start << "\n";
-        std::cout << "End: " << node.end << "\n";
-        std::cout << "Mean: " << node.mean.transpose() << "\n";
-        std::cout << "Farthest Instance: " << node.farthest_instance.transpose() << "\n";
-        std::cout << "------------------------\n";
-    }
-
-    return 0;
+    // for (const Node &node : vgs)
+    // {
+    //     std::cout << "Start: " << node.start << "\n";
+    //     std::cout << "End: " << node.end << "\n";
+    //     std::cout << "Mean: " << node.mean.transpose() << "\n";
+    //     std::cout << "Farthest Instance: " << node.farthest_instance.transpose() << "\n";
+    //     std::cout << "------------------------\n";
+    // }
+    // return 0;
 }
